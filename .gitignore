@@ -1,0 +1,13 @@
+# Build artifacts
+*.o
+*.elf
+*.list
+
+# Test images
+test-*.img
+
+# Editor/IDE
+.vscode/
+*.swp
+*~
+.DS_Store
