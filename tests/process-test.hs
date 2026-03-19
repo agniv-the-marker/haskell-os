@@ -79,14 +79,24 @@ hs_main = do
         (idx, val) <- select [ch0, ch1]
         testEq "select first chan" (idx, val) (0, 88)
 
-    -- Test 7: select on 2 channels, both have data, picks first
+    -- Test 7: select on 2 channels, both have data
+    -- With round-robin, either channel may be picked first.
+    -- We only assert: (a) the returned value matches the channel index,
+    -- and (b) the other channel still has its item (select drains exactly one).
     t7 <- do
         ch0 <- newChan :: IO (Chan Int)
         ch1 <- newChan :: IO (Chan Int)
         send ch0 10
         send ch1 20
         (idx, val) <- select [ch0, ch1]
-        testEq "select both, picks first" (idx, val) (0, 10)
+        let valOk = (idx == 0 && val == 10) || (idx == 1 && val == 20)
+        -- the other channel must still have its item
+        m0 <- tryRecv ch0
+        m1 <- tryRecv ch1
+        let otherOk = case idx of
+              0 -> m1 == Just 20 && isNothing m0
+              _ -> m0 == Just 10 && isNothing m1
+        testBool "select both: got one valid item" (valOk && otherOk)
 
     UART.putStrLn ""
 
@@ -165,6 +175,14 @@ hs_main = do
 -- ================================================================
 -- Test helpers
 -- ================================================================
+
+testBool :: String -> Bool -> IO Bool
+testBool name ok = do
+    UART.putStr "  "
+    UART.putStr name
+    UART.putStr ": "
+    if ok then UART.putStrLn "ok" else UART.putStrLn "FAIL"
+    return ok
 
 testEq :: (Eq a, Show a) => String -> a -> a -> IO Bool
 testEq name got expected = do
