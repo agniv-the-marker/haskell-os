@@ -44,7 +44,7 @@ hs_main = do
     t7 <- testEq "kernelCode size" (VM.mrSize VM.kernelCodeRegion) VM.sectionSize
     t8 <- testEq "device VA" (VM.mrVA VM.deviceRegion) 0x20000000
     t9 <- testEq "device PA" (VM.mrPA VM.deviceRegion) 0x20000000
-    t10 <- testEq "device size" (VM.mrSize VM.deviceRegion) (3 * VM.sectionSize)
+    t10 <- testEq "device size" (VM.mrSize VM.deviceRegion) (16 * VM.sectionSize)
 
     UART.putStrLn ""
 
@@ -91,34 +91,16 @@ hs_main = do
     -- Create fresh page table for the full test
     pt2 <- VM.createPageTable
 
-    -- Identity map everything needed
+    -- Use the same regions as initMMU so the test reflects real OS configuration
     VM.mapRegion pt2 VM.kernelCodeRegion
     VM.mapRegion pt2 VM.kernelHeapRegion
     VM.mapRegion pt2 VM.deviceRegion
+    VM.mapRegion pt2 VM.stackRegion
+    VM.mapRegion pt2 VM.irqStackRegion
+    VM.mapRegion pt2 VM.mhsHeapRegion
 
-    -- Stack regions (same as Shell.hs doVmTest)
-    let stackRegion = VM.MemRegion
-          { VM.mrVA    = 0x07000000
-          , VM.mrPA    = 0x07000000
-          , VM.mrSize  = VM.sectionSize * 16
-          , VM.mrPerm  = VM.APFullAccess
-          , VM.mrDom   = 0
-          , VM.mrCache = VM.WriteBack
-          }
-    VM.mapRegion pt2 stackRegion
-
-    let irqStackRegion = VM.MemRegion
-          { VM.mrVA    = 0x08000000
-          , VM.mrPA    = 0x08000000
-          , VM.mrSize  = VM.sectionSize * 16
-          , VM.mrPerm  = VM.APFullAccess
-          , VM.mrDom   = 0
-          , VM.mrCache = VM.WriteBack
-          }
-    VM.mapRegion pt2 irqStackRegion
-
-    -- Set all domains to manager
-    mapM_ (`VM.setDomainAccess` VM.DomainManager) [0..15]
+    -- Use DomainClient (AP bits enforced) to match initMMU, not DomainManager
+    VM.setDomainAccess 0 VM.DomainClient
 
     -- Enable MMU
     VM.mmuEnable pt2
