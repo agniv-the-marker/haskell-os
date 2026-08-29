@@ -123,8 +123,8 @@ void c_delay_us(unsigned us);
 void c_delay_ms(unsigned ms);
 
 void  heap_init(void);
-void *kmalloc(unsigned nbytes);
-void *kmalloc_aligned(unsigned nbytes, unsigned alignment);
+unsigned int kmalloc(unsigned nbytes);
+unsigned int kmalloc_aligned(unsigned nbytes, unsigned alignment);
 
 void uart_puts(const char *s);
 void uart_put_hex(unsigned val);
@@ -139,8 +139,8 @@ unsigned c_uart_rx_read(void);
 
 // sd.c
 unsigned pi_sd_init(void);
-unsigned pi_sd_read(void *data, unsigned lba, unsigned nsec);
-unsigned pi_sd_write(void *data, unsigned lba, unsigned nsec);
+unsigned pi_sd_read(unsigned int data, unsigned lba, unsigned nsec);
+unsigned pi_sd_write(unsigned int data, unsigned lba, unsigned nsec);
 
 // hal-asm.S
 void mmu_enable(void);
