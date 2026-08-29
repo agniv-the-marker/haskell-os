@@ -34,4 +34,10 @@ SECTIONS
         __prog_end__ = .;
         __heap_start__ = .;
     }
+    # Avoids undefined reference to `__exidx_end'
+    .ARM.exidx : {
+      __exidx_start = .;
+       *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+      __exidx_end = .;
+    }
 }
