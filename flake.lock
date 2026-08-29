@@ -1,0 +1,42 @@
+{
+  "nodes": {
+    "cs140e": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1743550368,
+        "narHash": "sha256-yVN8+yobQdfEW4L7wDXTrhEkFqo/sm/x+iNf30kyFrg=",
+        "owner": "dddrrreee",
+        "repo": "cs140e-25win",
+        "rev": "db702597d084629671f272b0d0b6d7f54a77c609",
+        "type": "github"
+      },
+      "original": {
+        "owner": "dddrrreee",
+        "repo": "cs140e-25win",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1784280462,
+        "narHash": "sha256-DtoqIqM7VkR6NxAkcLpMwmi02USwWb3JdmNGLyhthc0=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "293d6abedf0478e681a4dfcfcb35b30fc796a32f",
+        "type": "github"
+      },
+      "original": {
+        "id": "nixpkgs",
+        "type": "indirect"
+      }
+    },
+    "root": {
+      "inputs": {
+        "cs140e": "cs140e",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
