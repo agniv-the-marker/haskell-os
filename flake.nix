@@ -1,9 +1,17 @@
 {
   description = "haskell-os";
+  nixConfig = {
+    # For .#haskell-os-disk
+    allow-import-from-derivation = true;
+  };
   inputs = {
     nixpkgs.url = "flake:nixpkgs";
     cs140e = {
       url = "github:dddrrreee/cs140e-25win";
+      flake = false;
+    };
+    nixos-on-arm = {
+      url = "github:ProjectInitiative/nixos-on-arm";
       flake = false;
     };
   };
@@ -58,6 +66,17 @@
             installPhase = ''
               cp -v kernel.img $out
             '';
+          };
+          haskell-os-disk = pkgs.callPackage (inputs.nixos-on-arm + "/modules/make-fat-fs.nix") {
+            volumeLabel = "HASKELL_OS";
+            size = "4M";
+            # FixMe(completeness): some firmware files may be missing
+            populateImageCommands = ''
+              cp -vrt files/ ${inputs.cs140e}/firmware/{bootcode.bin,config.txt,start.elf}
+              cp -v ${inputs.self.packages.${system}.haskell-os-kernel} files/kernel.img
+            '';
+            storePaths = [
+            ];
           };
         }
       );
