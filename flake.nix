@@ -64,7 +64,8 @@
                 }/src/runtime
             '';
             installPhase = ''
-              cp -v kernel.img $out
+              mkdir $out
+              cp -vt $out kernel.{img,elf}
             '';
           };
           haskell-os-disk = pkgs.callPackage (inputs.nixos-on-arm + "/modules/make-fat-fs.nix") {
@@ -72,11 +73,50 @@
             size = "4M";
             # FixMe(completeness): some firmware files may be missing
             populateImageCommands = ''
-              cp -vrt files/ ${inputs.cs140e}/firmware/{bootcode.bin,config.txt,start.elf}
-              cp -v ${inputs.self.packages.${system}.haskell-os-kernel} files/kernel.img
+              cp -vrt files/ \
+                ${inputs.cs140e}/firmware/{bootcode.bin,config.txt,start.elf} \
+                ${inputs.self.packages.${system}.haskell-os-kernel}/kernel.elf
             '';
             storePaths = [
             ];
+          };
+        }
+      );
+      apps = foreachSystem (
+        { pkgs, system, ... }:
+        {
+          haskell-os-qemu-raspi0 = {
+            type = "app";
+            program = lib.getExe (
+              pkgs.writeShellApplication {
+                name = "haskell-os-qemu-raspi0";
+                runtimeInputs = [
+                  pkgs.qemu
+                ];
+                text = ''
+                  set -x
+                  TMPDIR=''${TMPDIR:-/tmp}
+                  cp --no-preserve=mode -vf \
+                    ${inputs.self.packages.${system}.haskell-os-disk} \
+                    "$TMPDIR"/haskell-os.img
+                  qemu-system-arm \
+                    -d guest_errors \
+                    -no-reboot \
+                    -dtb ${dtbs/bcm2708-rpi-zero.dtb} \
+                    -M raspi0 \
+                    -cpu arm1176 \
+                    -m 512M \
+                    -kernel ${inputs.self.packages.${system}.haskell-os-kernel}/kernel.elf \
+                    -smp 1 \
+                    -k en-us \
+                    -device usb-kbd \
+                    -nographic \
+                    -serial null \
+                    -serial mon:stdio \
+                    "$@"
+                '';
+              }
+            );
           };
         }
       );
