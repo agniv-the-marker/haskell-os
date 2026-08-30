@@ -6540,10 +6540,14 @@ MHS_INIT_ARGS(
       c = getb(bf);
     }
 #endif
+#if WANT_LZ77
     if (c == 'z') {
       /* add LZ77 compressor transducer */
       bf = add_lz77_decompressor(bf);
-    } else {
+    }
+    else
+#endif
+    {
       /* put it back, we need it */
       ungetb(c, bf);
     }
