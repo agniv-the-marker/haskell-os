@@ -1,13 +1,5 @@
 /* Copyright 2023,2024,2025 Lennart Augustsson
  * See LICENSE file for full license.
- *
- * https://github.com/augustss/MicroHs/blob/376e74ff/src/runtime/eval.c
- * 
- * needed to add guarding against null/outofrange before refereincing
- * because it would dereference exception vectors by accident
- *
- * added preempt_pending check at the top of the reduction loop
- * so the ARM timer IRQ can force a yield at reduction boundaries
  */
 #include "mhsffi.h"  /* this includes config.h */
 #include "extra.c"
@@ -16,6 +8,14 @@
 #define WANT_GMP 0
 #endif /* defined(WANT_GMP) */
 
+#if !defined(WANT_OVERFLOW)
+#define WANT_OVERFLOW 0
+#endif /* defined(WANT_OVERFLOW) */
+
+#if WANT_STDIO
+#include <stdio.h>
+#include <locale.h>
+#endif
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,7 +29,6 @@
 #endif /* __EMSCRIPTEN__ */
 #if WANT_DIR
 #include <dirent.h>
-#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #endif  /* WANT_DIR */
@@ -90,7 +89,8 @@ size_t lz77d(uint8_t *src, size_t srclen, uint8_t **bufp);
 size_t lz77c(uint8_t *src, size_t srclen, uint8_t **bufp);
 #endif
 
-#if defined(__GNUC__) && __GNUC__ >= 14 && defined(__aarch64__)
+/* The register optimization is disabled for now since it breaks on some platforms. */
+#if 0 && defined(__GNUC__) && __GNUC__ >= 14 && defined(__aarch64__)
 #define REGISTER(dcl, reg) register dcl asm(#reg)
 #else
 #define REGISTER(dcl, reg) dcl
@@ -254,6 +254,28 @@ FFS(bits_t x)
 #define BUILTIN_POPCOUNT64 __builtin_popcountll
 #endif
 
+/* If there are compiler intrinsics to detect over flow, do so */
+#if __has_builtin(__builtin_add_overflow) && WANT_OVERFLOW
+#define ADD_OVERFLOW(T, r, a, b) do { T vr; if (__builtin_add_overflow((T)(a), (T)(b), &(vr))) raise_rts(exn_overflow); (r) = vr; } while(0)
+#endif
+#if __has_builtin(__builtin_sub_overflow) && WANT_OVERFLOW
+#define SUB_OVERFLOW(T, r, a, b) do { T vr; if (__builtin_sub_overflow((T)(a), (T)(b), &(vr))) raise_rts(exn_overflow); (r) = vr; } while(0)
+#endif
+#if __has_builtin(__builtin_mul_overflow) && WANT_OVERFLOW
+#define MUL_OVERFLOW(T, r, a, b) do { T vr; if (__builtin_mul_overflow((T)(a), (T)(b), &(vr))) raise_rts(exn_overflow); (r) = vr; } while(0)
+#endif
+
+#endif
+
+/* If we can't detect overflow, just ignore it. */
+#if !defined(ADD_OVERFLOW)
+#define ADD_OVERFLOW(T, r, a, b) ((r) = (a) + (b))
+#endif
+#if !defined(SUB_OVERFLOW)
+#define SUB_OVERFLOW(T, r, a, b) ((r) = (a) - (b))
+#endif
+#if !defined(MUL_OVERFLOW)
+#define MUL_OVERFLOW(T, r, a, b) ((r) = (a) * (b))
 #endif
 
 
@@ -428,7 +450,7 @@ islinux(void)
 #endif
 
 #if !defined(STACK_SIZE)
-#define STACK_SIZE 200000
+#define STACK_SIZE 250000
 #endif
 
 /* tcc doesn't understand noreturn attribute */
@@ -442,11 +464,13 @@ enum node_tag { T_FREE, T_IND, T_AP, T_INT, T_INT64X, T_DBL, T_FLT32, T_PTR, T_F
                 T_S, T_K, T_I, T_B, T_C,
                 T_A, T_Y, T_SS, T_BB, T_CC, T_P, T_R, T_O, T_U, T_Z, T_J,
                 T_K2, T_K3, T_K4, T_CCB,
-                T_ADD, T_SUB, T_MUL, T_QUOT, T_REM, T_SUBR, T_UQUOT, T_UREM, T_NEG,
+                T_ADD, T_SUB, T_MUL, T_QUOT, T_REM, T_SUBR, T_NEG,
+                T_UADD, T_USUB, T_UMUL, T_UQUOT, T_UREM, T_USUBR, T_UNEG,
                 T_AND, T_OR, T_XOR, T_INV, T_SHL, T_SHR, T_ASHR,
                 T_POPCOUNT, T_CLZ, T_CTZ,
                 T_EQ, T_NE, T_LT, T_LE, T_GT, T_GE, T_ULT, T_ULE, T_UGT, T_UGE, T_ICMP, T_UCMP,
-                T_ADD64, T_SUB64, T_MUL64, T_QUOT64, T_REM64, T_SUBR64, T_UQUOT64, T_UREM64, T_NEG64,
+                T_ADD64, T_SUB64, T_MUL64, T_QUOT64, T_REM64, T_SUBR64, T_NEG64,
+                T_UADD64, T_USUB64, T_UMUL64, T_UQUOT64, T_UREM64, T_USUBR64, T_UNEG64,
                 T_AND64, T_OR64, T_XOR64, T_INV64, T_SHL64, T_SHR64, T_ASHR64,
                 T_POPCOUNT64, T_CLZ64, T_CTZ64,
                 T_EQ64, T_NE64, T_LT64, T_LE64, T_GT64, T_GE64, T_ULT64, T_ULE64, T_UGT64, T_UGE64, T_ICMP64, T_UCMP64,
@@ -474,6 +498,7 @@ enum node_tag { T_FREE, T_IND, T_AP, T_INT, T_INT64X, T_DBL, T_FLT32, T_PTR, T_F
                 T_IO_PERFORMIO, T_IO_PRINT, T_CATCH, T_CATCHR,
                 T_IO_CCALL,
                 T_IO_GC, T_IO_STATS,
+                T_IO_LAZYBIND, T_IO_STRICT,
                 T_DYNSYM,
                 T_IO_FORK, T_IO_THID, T_THNUM, T_IO_THROWTO, T_IO_YIELD,
                 T_IO_NEWMVAR,
@@ -493,15 +518,11 @@ enum node_tag { T_FREE, T_IND, T_AP, T_INT, T_INT64X, T_DBL, T_FLT32, T_PTR, T_F
                 T_LAST_TAG,
 };
 
-#if WANT_TAGNAMES
 /* Most entries are initialized from the primops table. */
 static const char* tag_names [T_LAST_TAG+1] =
   { "FREE", "IND", "AP", "INT", "INT64", "DBL", "FLT32", "PTR",
     "FUNPTR", "FORPTR", "BADDYN", "ARR", "THID", "MVAR", "WEAK" };
 #define TAGNAME(t) tag_names[t]
-#else
-#define TAGNAME(t) "?"
-#endif
 
 /* On 64 bit platforms there is no special type for Int64 */
 #if NEED_INT64
@@ -546,15 +567,43 @@ typedef struct PACKED node {
     struct weak_ptr *uuweak;
   } uarg;
 } node;
-#define BIT_TAG   1
-#define BIT_IND   2
-#define BIT_NOTAP (BIT_TAG | BIT_IND)
+/*
+ * Low bits encode the node type
+ *  00 - T_AP  application
+ *  01 - tag   upper bits are T_XXX
+ *  10 - T_IND indirection
+ *  11 - unused
+ * Only the lower 2 bits are free on 32 bit platforms with 3 word nodes
+ * (i.e. with WANT_DOUBLE or WANT_INT64).
+ */
 #define TAG_SHIFT 2
+#define BIT_MASK  ((1 << TAG_SHIFT) - 1)
+#define BIT_AP    0
+#define BIT_TG    1
+#define BIT_IN    2
+
+static inline tag_t GETTAG(NODEPTR p)
+{
+  tag_t t = p->ufun.uutag;
+  switch(t & BIT_MASK) {
+  case BIT_AP: return T_AP;
+  case BIT_IN: return T_IND;
+  default:     return t >> TAG_SHIFT;
+  }
+}
+static inline void SETTAG(NODEPTR p, tag_t t)
+{
+  switch(t) {
+  case BIT_AP: break;           /* do nothing, bits are already 0 */
+  case BIT_IN: p->ufun.uutag |= BIT_IN; break;
+  default:     p->ufun.uutag = (t << TAG_SHIFT) | BIT_TG; break;
+  }
+}
 
 #define NIL 0
 #define HEAPREF(i) &cells[(i)]
-#define GETTAG(p) ((p)->ufun.uutag & BIT_NOTAP ? ( (p)->ufun.uutag & BIT_IND ? T_IND : (int)((p)->ufun.uutag >> TAG_SHIFT) ) : T_AP)
-#define SETTAG(p,t) do { if (t != T_AP) { if (t == T_IND) { (p)->ufun.uutag = BIT_IND; } else { (p)->ufun.uutag = ((t) << TAG_SHIFT) | BIT_TAG; } } } while(0)
+// #define GETTAG(p) ( ? ( (p)->ufun.uutag & BIT_IND ? T_IND : (int)((p)->ufun.uutag >> TAG_SHIFT) ) : T_AP)
+// #define SETTAG(p,t) do { if (t != T_AP) { if (t == T_IND) { (p)->ufun.uutag = BIT_IND; } else { (p)->ufun.uutag = ((t) << TAG_SHIFT) | BIT_TAG; } } } while(0)
 #define GETVALUE(p) (p)->uarg.uuvalue
 #define GETINT64VALUE(p) (p)->uarg.uuint64value
 #define GETINT32VALUE(p) (p)->uarg.uuint32value
@@ -575,10 +624,12 @@ typedef struct PACKED node {
 #define ARR(p) (p)->uarg.uuarray
 #define THR(p) (p)->uarg.uuthread
 #define MVAR(p) (p)->uarg.uumvar
-#define ISINDIR(p) ((p)->ufun.uuifun & BIT_IND)
+//#define ISINDIR(p) ((p)->ufun.uuifun & BIT_IND)
+#define ISINDIR(p) (GETTAG((p)) == T_IND)
 #define WEAK(p) (p)->uarg.uuweak
-#define GETINDIR(p) ((struct node*) ((p)->ufun.uuifun & ~BIT_IND))
-#define SETINDIR(p,q) do { (p)->ufun.uuifun = (intptr_t)(q) | BIT_IND; } while(0)
+//#define GETINDIR(p) ((struct node*) ((p)->ufun.uuifun & ~BIT_IND))
+#define GETINDIR(p) ((struct node*) ((p)->ufun.uuifun & ~BIT_MASK))
+#define SETINDIR(p,q) do { (p)->ufun.uuifun = (intptr_t)(q) | BIT_IN; } while(0)
 #define NODE_SIZE sizeof(node)
 #define ALLOC_HEAP(n) do { cells = mmalloc(n * sizeof(node)); } while(0)
 #define LABEL(n) ((heapoffs_t)((n) - cells))
@@ -937,7 +988,8 @@ free_stableptr(uvalue_t sp)
 }
 
 /* The order of these must be kept in sync with Control.Exception.Internal.rtsExn */
-enum rts_exn { exn_stackoverflow, exn_heapoverflow, exn_threadkilled, exn_userinterrupt, exn_dividebyzero, exn_blockedmvar, exn_blockedstm };
+enum rts_exn { exn_stackoverflow, exn_heapoverflow, exn_threadkilled, exn_userinterrupt,
+               exn_dividebyzero, exn_blockedmvar, exn_blockedstm, exn_overflow };
 
 NORETURN void raise_exn(NODEPTR exn);
 struct mvar* new_mvar(void);
@@ -960,7 +1012,7 @@ void pp(FILE*, NODEPTR);
 
 /* Needed during reduction */
 NODEPTR intTable[HIGH_INT - LOW_INT];
-NODEPTR combK, combTrue, combI, combCons, combPair;
+NODEPTR combK, combA, combI, combCons, combPair;
 NODEPTR combCC, combZ, combIOBIND, combIORETURN, combIOTHEN, combB, combC, combBB;
 NODEPTR combSETMASKINGSTATE;
 NODEPTR combLT, combEQ, combGT;
@@ -977,7 +1029,9 @@ NODEPTR combTHROWTO;
 NODEPTR combPairUnit;
 NODEPTR combWorld;
 NODEPTR combCATCHR;
+NODEPTR combFst, combSnd;
 #define combFalse combK
+#define combTrue combA
 #define combNothing combK
 #define combUnit combI
 
@@ -1641,6 +1695,7 @@ raise_exn(NODEPTR exn)
   }
 }
 
+/* Raise a RTS exception identified by a number rather than an exception value */
 NORETURN void
 raise_rts(enum rts_exn exn) {
   raise_exn(mkInt(exn));
@@ -1867,10 +1922,15 @@ struct {
   { "*", T_MUL, T_MUL },
   { "quot", T_QUOT },
   { "rem", T_REM },
+  { "u+", T_UADD, T_UADD },
+  { "u-", T_USUB, T_USUBR },
+  { "u*", T_UMUL, T_UMUL },
   { "uquot", T_UQUOT },
   { "urem", T_UREM },
   { "subtract", T_SUBR, T_SUB },
+  { "usubtract", T_USUBR, T_USUB },
   { "neg", T_NEG },
+  { "uneg", T_UNEG },
   { "and", T_AND, T_AND },
   { "or", T_OR, T_OR },
   { "xor", T_XOR, T_XOR },
@@ -1971,6 +2031,8 @@ struct {
   { "IO.gc", T_IO_GC },
   { "IO.stats", T_IO_STATS },
   { "IO.pp", T_IO_PP },
+  { "IO.lazyBind", T_IO_LAZYBIND },
+  { "IO.strict", T_IO_STRICT },
   { "raise", T_RAISE },
   { "catch", T_CATCH },
   { "catchr", T_CATCHR },
@@ -2033,10 +2095,15 @@ struct {
   { "I*", T_MUL, T_MUL },
   { "Iquot", T_QUOT },
   { "Irem", T_REM },
+  { "Iu+", T_UADD, T_UADD },
+  { "Iu-", T_USUB, T_USUBR },
+  { "Iu*", T_UMUL, T_UMUL },
   { "Iuquot", T_UQUOT },
   { "Iurem", T_UREM },
   { "Isubtract", T_SUBR, T_SUB },
+  { "Iusubtract", T_USUBR, T_USUB },
   { "Ineg", T_NEG },
+  { "Iuneg", T_UNEG },
   { "Iand", T_AND, T_AND },
   { "Ior", T_OR, T_OR },
   { "Ixor", T_XOR, T_XOR },
@@ -2070,10 +2137,15 @@ struct {
   { "I*", T_MUL64, T_MUL64 },
   { "Iquot", T_QUOT64 },
   { "Irem", T_REM64 },
+  { "Iu+", T_UADD64, T_UADD64 },
+  { "Iu-", T_USUB64, T_USUBR64 },
+  { "Iu*", T_UMUL64, T_UMUL64 },
   { "Iuquot", T_UQUOT64 },
   { "Iurem", T_UREM64 },
   { "Isubtract", T_SUBR64, T_SUB64 },
+  { "Iusubtract", T_USUBR64, T_USUB64 },
   { "Ineg", T_NEG64 },
+  { "Iuneg", T_UNEG64 },
   { "Iand", T_AND64, T_AND64 },
   { "Ior", T_OR64, T_OR64 },
   { "Ixor", T_XOR64, T_XOR64 },
@@ -2189,9 +2261,7 @@ init_nodes(void)
       //      if (primops[j].tag == t) {
       //        primops[j].node = n;
       //      }
-#if WANT_TAGNAMES
       tag_names[primops[j].tag] = primops[j].name;
-#endif
     }
   }
 
@@ -2221,6 +2291,8 @@ init_nodes(void)
   NEWAP(combJust, combZ, combU);       /* (Z U) */
   MKINT(combWorld, 99999);
   NEWAP(combPairUnit, combPair, combUnit);
+  NEWAP(combFst, combU, combK);
+  NEWAP(combSnd, combU, combA);
 #undef NEWAP
 
 #if INTTABLE
@@ -2445,18 +2517,30 @@ mark(NODEPTR *np)
   //    PRINT("mark depth %"PRIcounter"\n", mark_depth);
   top:
   n = *np;
-  // BAREMETAL: address 0 has exception vectors, not an unmapped page.
-  // Must guard against NULL/out-of-range before dereferencing.
-  if (n == NIL || n < cells || n > cells + heap_size)
-    return;
   tag = GETTAG(n);
   if (tag == T_IND) {
+#if SANITY
+    int loop = 0;
+    /* Skip indirections, and redirect start pointer */
+    while ((tag = GETTAG(n)) == T_IND) {
+      //      PRINT("*"); fflush(stdout);
+      n = GETINDIR(n);
+      if (loop++ > 10000000) {
+        //PRINT("%p %p %p\n", n, GETINDIR(n), GETINDIR(GETINDIR(n)));
+        ERR("IND loop");
+      }
+    }
+    //    if (loop)
+    //      PRINT("\n");
+#else  /* SANITY */
     while ((tag = GETTAG(n)) == T_IND) {
       n = GETINDIR(n);
-      if (n == NIL || n < cells || n > cells + heap_size) return;
     }
+#endif  /* SANITY */
     *np = n;
   }
+  if (n < cells || n > cells + heap_size)
+    ERR("bad n");
   if (is_marked_used(n)) {
     goto fin;
   }
@@ -2669,10 +2753,9 @@ gc(void)
 #endif
   gc_mark_time -= GETTIMEMILLI();
   mark_all_free();
-  // mark everything as reachable from the stack
-  for (i = 0; i <= stack_ptr; i++) {
+  /* Mark everything reachable from the stack */
+  for (i = 0; i <= stack_ptr; i++)
     mark(&stack[i]);
-  }
 
   /* Mark everything reachable from permanent array nodes */
   for (struct ioarray *arr = array_root; arr; arr = arr->next) {
@@ -3355,6 +3438,8 @@ parse_string(BFILE *f)
 
   for(i = 0;;) {
     c = getb(f);
+    if (c < 0)
+      ERR("parse string EOF");
     if (c == '"')
       break;
     if (i >= sz - 1) {
@@ -3531,10 +3616,8 @@ parse(BFILE *f)
         /* not referenced yet, so add a direct reference */
         *nodep = x;
       } else {
-        // sanity check here
-        if (GETTAG(*nodep) != T_IND || GETINDIR(*nodep) != NIL) {
-          ERR("shared != NIL");
-        }
+        /* Sanity check */
+        if (GETTAG(*nodep) != T_IND || GETINDIR(*nodep) != NIL) ERR("shared != NIL");
         SETINDIR(*nodep, x);
       }
       break;
@@ -3839,7 +3922,9 @@ printrec(BFILE *f, struct print_bits *pb, NODEPTR n, bool prefix)
 #if NEED_INT64
   case T_INT64: putb('#', f); putb('#', f); putdecb64(GETINT64VALUE(n), f); break;
 #endif  /* NEED_INT64 */
-  case T_DBL: putb('&', f); putdblb(GETDBLVALUE(n), f); break;
+#if WANT_FLOAT64
+case T_DBL: putb('&', f); putdblb(GETDBLVALUE(n), f); break;
+#endif
   case T_FLT32: putb('&', f); putb('&', f); putdblb((double)GETFLTVALUE(n), f); break;
   case T_WEAK: ERR("serialize WEAK unimplemented");
   case T_ARR:
@@ -3923,24 +4008,21 @@ printrec(BFILE *f, struct print_bits *pb, NODEPTR n, bool prefix)
     break;
   case T_IO_CCALL: putb('^', f); putsb(FFI_IX(GETVALUE(n)).ffi_name, f); break;
   case T_BADDYN: putb('^', f); putsb(CSTR(n), f); break;
+#if WANT_TICK
   case T_TICK:
     putb('!', f);
     print_string(f, tick_table[GETVALUE(n)].tick_name);
     break;
-  default:
-    if (0 <= tag && tag <= T_LAST_TAG)
-#if WANT_TICK && WANT_TAGNAMES
-      if (tag_names[tag])
-        putsb(tag_names[tag], f);
-      else
 #endif
-        {
-        snprintf(prbuf, sizeof prbuf, "TAG=%d", (int)tag);
-        putsb(prbuf, f);
+  default:
+    if (0 <= tag && tag <= T_LAST_TAG) {
+      if (tag_names[tag]) {
+        putsb(tag_names[tag], f);
+      } else {
+        ERR1("TAG %d", tag);
       }
-    else {
-      snprintf(prbuf, sizeof prbuf, "BADTAG(%d)", (int)tag);
-      putsb(prbuf, f);
+    } else {
+      ERR1("TAG %d", tag);
     }
     break;
   }
@@ -4670,12 +4752,8 @@ evali(NODEPTR an)
 
  top:
   /*pp(stdout, an);*/
-  // add preemption here, since this is the main loop of the evaluator.
-  // we don't want to preempt in the middle of a reduction, but we want to preempt between reductions.
-  if (--glob_slice <= 0 || preempt_pending) {
-    preempt_pending = 0;
+  if (--glob_slice <= 0)
     yield();
-  }
   l = LABEL(n);
   if (l < T_IO_STDIN) {
     /* The node is one of the permanent nodes; the address offset is the tag */
@@ -4836,8 +4914,12 @@ evali(NODEPTR an)
   case T_QUOT:
   case T_REM:
   case T_SUBR:
+  case T_UADD:
+  case T_USUB:
+  case T_UMUL:
   case T_UQUOT:
   case T_UREM:
+  case T_USUBR:
   case T_AND:
   case T_OR:
   case T_XOR:
@@ -4868,6 +4950,7 @@ evali(NODEPTR an)
     }
     goto top;
   case T_NEG:
+  case T_UNEG:
   case T_INV:
   case T_POPCOUNT:
   case T_CLZ:
@@ -5018,8 +5101,12 @@ evali(NODEPTR an)
   case T_QUOT64:
   case T_REM64:
   case T_SUBR64:
+  case T_UADD64:
+  case T_USUB64:
+  case T_UMUL64:
   case T_UQUOT64:
   case T_UREM64:
+  case T_USUBR64:
   case T_AND64:
   case T_OR64:
   case T_XOR64:
@@ -5050,6 +5137,7 @@ evali(NODEPTR an)
     }
     goto top;
   case T_NEG64:
+  case T_UNEG64:
   case T_INV64:
   case T_POPCOUNT64:
   case T_CLZ64:
@@ -5312,6 +5400,22 @@ evali(NODEPTR an)
     GCCHECK(2);
     CHKARG2;
     GOAP2(combIOBIND, x, new_ap(combK, y));
+  case T_IO_LAZYBIND:
+    /* Lazy bind, used for the lazy ST monad.
+     * DO NOT USE FOR IO, because effects are not guaranteed to happen.
+     *   (x `lazyBind` y) z = let w = x z in y (fst w) (snd w)
+     */
+    GCCHECK(4);
+    CHKARG3;
+    w = new_ap(x, z);
+    GOAP2(y, new_ap(combFst, w), new_ap(combSnd, w));
+  case T_IO_STRICT:
+    CHKARG2;
+    /* Force the world argument before executing the IO.
+     * IO.strict io World = seq World (io World) 
+     */
+    (void)evali(y);             /* evaluate the world */
+    GOAP(x, y);                 /* and run IO computation */
 #if WANT_STDIO
   case T_IO_PP:
     CHKARG2;
@@ -5805,20 +5909,26 @@ evali(NODEPTR an)
     binint:
       switch (GETTAG(p)) {
       case T_IND:   p = GETINDIR(p); goto binint;
-      case T_ADD:   ru = xu + yu; break;
-      case T_SUB:   ru = xu - yu; break;
-      case T_MUL:   ru = xu * yu; break;
-      case T_SUBR:  ru = yu - xu; break;
+      case T_ADD:   ADD_OVERFLOW(value_t, ru, xu, yu); break;
+      case T_SUB:   SUB_OVERFLOW(value_t, ru, xu, yu); break;
+      case T_MUL:   MUL_OVERFLOW(value_t, ru, xu, yu); break;
+      case T_SUBR:  SUB_OVERFLOW(value_t, ru, yu, xu); break;
       case T_QUOT:  if (yu == 0)
                       raise_rts(exn_dividebyzero);
+                    else if ((value_t)xu == VALUE_MIN && (value_t)yu == -1)
+                      raise_rts(exn_overflow);
                     else
                       ru = (uvalue_t)((value_t)xu / (value_t)yu);
                     break;
       case T_REM:   if (yu == 0)
                       raise_rts(exn_dividebyzero);
-                    else
+                    else        /* this should not overflow under any circumstances */
                       ru = (uvalue_t)((value_t)xu % (value_t)yu);
                     break;
+      case T_UADD:  ru = xu + yu; break;
+      case T_USUB:  ru = xu - yu; break;
+      case T_UMUL:  ru = xu * yu; break;
+      case T_USUBR: ru = yu - xu; break;
       case T_UQUOT: if (yu == 0)
                       raise_rts(exn_dividebyzero);
                     else
@@ -5869,7 +5979,8 @@ evali(NODEPTR an)
     unint:
       switch (GETTAG(p)) {
       case T_IND:      p = GETINDIR(p); goto unint;
-      case T_NEG:      ru = -xu; break;
+      case T_NEG:      if ((value_t)xu == VALUE_MIN) raise_rts(exn_overflow); ru = -xu; break;
+      case T_UNEG:     ru = -xu; break;
       case T_INV:      ru = ~xu; break;
       case T_POPCOUNT: ru = POPCOUNT(xu); break;
       case T_CLZ:      ru = CLZ(xu); break;
@@ -5912,12 +6023,14 @@ evali(NODEPTR an)
     binint64:
       switch (GETTAG(p)) {
       case T_IND:   p = GETINDIR(p); goto binint64;
-      case T_ADD64: r64u = x64u + y64u; break;
-      case T_SUB64: r64u = x64u - y64u; break;
-      case T_MUL64: r64u = x64u * y64u; break;
-      case T_SUBR64:r64u = y64u - x64u; break;
+      case T_ADD64: ADD_OVERFLOW(int64_t, r64u, x64u, y64u); break;
+      case T_SUB64: SUB_OVERFLOW(int64_t, r64u, x64u, y64u); break;
+      case T_MUL64: MUL_OVERFLOW(int64_t, r64u, x64u, y64u); break;
+      case T_SUBR64:SUB_OVERFLOW(int64_t, r64u, y64u, x64u); break;
       case T_QUOT64:if (y64u == 0)
                       raise_rts(exn_dividebyzero);
+                    else if ((int64_t)xu == INT64_MIN && (int64_t)yu == -1)
+                      raise_rts(exn_overflow);
                     else
                       r64u = (uint64_t)((int64_t)x64u / (int64_t)y64u);
                     break;
@@ -5926,6 +6039,10 @@ evali(NODEPTR an)
                     else
                       r64u = (uint64_t)((int64_t)x64u % (int64_t)y64u);
                     break;
+      case T_UADD64:r64u = x64u + y64u; break;
+      case T_USUB64:r64u = x64u - y64u; break;
+      case T_UMUL64:r64u = x64u * y64u; break;
+      case T_USUBR64:r64u = y64u - x64u; break;
       case T_UQUOT64:if (y64u == 0)
                       raise_rts(exn_dividebyzero);
                     else
@@ -5976,7 +6093,8 @@ evali(NODEPTR an)
     unint64:
       switch (GETTAG(p)) {
       case T_IND:        p = GETINDIR(p); goto unint64;
-      case T_NEG64:      r64u = -x64u; break;
+      case T_NEG64:      if ((int64_t)x64u == INT64_MIN) raise_rts(exn_overflow); r64u = -x64u; break;
+      case T_UNEG64:     r64u = -x64u; break;
       case T_INV64:      r64u = ~x64u; break;
       case T_POPCOUNT64: ru = POPCOUNT64(x64u); SETINT(n, (value_t)ru); goto ret;
       case T_CLZ64:      ru = CLZ64(x64u); SETINT(n, (value_t)ru); goto ret;
@@ -6208,6 +6326,7 @@ die_exn(NODEPTR exn)
     case 4: msg = "DivideByZero"; break;
     case 5: msg = "blocked MVar"; break;
     case 6: msg = "blocked STM"; break;
+    case 7: msg = "arithmetic overflow"; break;
     default: msg = "unknown"; break;
     }
   } else {
@@ -6256,15 +6375,25 @@ extern const int combexprlen;
 int dump_ticks = 0;
 #endif
 
-NODEPTR
-mhs_init_args(
 #if WANT_ARGS
+  #if WANT_STDIO
+  #define MHS_INIT_ARGS(a,b,c,d) mhs_init_args(a,b,c,d)
+  #else
+  #define MHS_INIT_ARGS(a,b,c,d) mhs_init_args(a,b)
+  #endif
+#else  /* WANT_ARGS */
+  #if WANT_STDIO
+  #define MHS_INIT_ARGS(a,b,c,d) mhs_init_args(c,d)
+  #else
+  #define MHS_INIT_ARGS(a,b,c,d) mhs_init_args()
+  #endif
+#endif  /* WANT_ARGS */
+
+NODEPTR
+MHS_INIT_ARGS(
               int argc, char **argv,
-#endif
-#if WANT_STDIO
               char **outnamep,
               size_t *file_sizep
-#endif
 )
 {
   NODEPTR prog;
@@ -6384,7 +6513,7 @@ mhs_init_args(
       *file_sizep = combexprlen;
 #endif
     } else {
-#if WANT_STDIO
+#if WANT_STDIO & WANT_ARGS
       /* Open a regular file */
       FILE *f = fopen(inname, "r");
       if (!f)
@@ -6423,8 +6552,8 @@ mhs_init_args(
   PUSH(prog);
   want_gc_red = 1;
   gc();
-  gc();
-  want_gc_red = 0;
+  gc();                         /* this finds some more GC reductions */
+  want_gc_red = 0;              /* can be enabled, but it is rarely a win */
   prog = POPTOP();
   return prog;
 }  
@@ -6435,7 +6564,7 @@ mhs_init(void)
   char *args[2] = { "<mhs_init>", 0 };
   char *outname;
   size_t file_size;
-  (void)mhs_init_args(1, args, &outname, &file_size);
+  (void)MHS_INIT_ARGS(1, args, &outname, &file_size);
 }
 
 int
@@ -6448,7 +6577,7 @@ mhs_main(int argc, char **argv)
   counter_t instrs;
 #endif  /* WANT_KPERF */
 
-  prog = mhs_init_args(argc, argv, &outname, &file_size);
+  prog = MHS_INIT_ARGS(argc, argv, &outname, &file_size);
 
 #if WANT_STDIO
   heapoffs_t start_size = num_marked;
@@ -7226,10 +7355,6 @@ const struct ffi_entry ffi_table[] = {
   { "poke_ullong", 2, mhs_poke_ullong},
   { "poke_ulong", 2, mhs_poke_ulong},
   { "poke_size_t", 2, mhs_poke_size_t},
-#if WANT_FLOAT
-  { "peek_flt", 1, mhs_peek_flt},
-  { "poke_flt", 2, mhs_poke_flt},
-#endif  /* WANT_FLOAT */
   { "sizeof_char", 0, mhs_sizeof_char},
   { "sizeof_short", 0, mhs_sizeof_short},
   { "sizeof_int", 0, mhs_sizeof_int},
@@ -7289,3 +7414,15 @@ const struct ffi_entry ffi_table[] = {
 };
 
 int num_ffi = sizeof(ffi_table) / sizeof(ffi_table[0]);
+
+bool
+xxindir(NODEPTR p)
+{
+  return ISINDIR(p);
+}
+
+void
+xxsetind(NODEPTR p, NODEPTR q)
+{
+  SETINDIR(p, q);
+}
