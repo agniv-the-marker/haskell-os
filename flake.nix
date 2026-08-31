@@ -76,6 +76,7 @@
               cp -vrt files/ \
                 ${inputs.cs140e}/firmware/{bootcode.bin,config.txt,start.elf} \
                 ${inputs.self.packages.${system}.haskell-os-kernel}/kernel.elf
+              cp -v ${./DEMO.LSP} files/demo.lsp
             '';
             storePaths = [
             ];
@@ -93,28 +94,59 @@
                 runtimeInputs = [
                   pkgs.qemu
                 ];
-                text = ''
-                  set -x
-                  TMPDIR=''${TMPDIR:-/tmp}
-                  cp --no-preserve=mode -vf \
-                    ${inputs.self.packages.${system}.haskell-os-disk} \
-                    "$TMPDIR"/haskell-os.img
-                  qemu-system-arm \
-                    -d guest_errors \
-                    -no-reboot \
-                    -dtb ${dtbs/bcm2708-rpi-zero.dtb} \
-                    -M raspi0 \
-                    -cpu arm1176 \
-                    -m 512M \
-                    -kernel ${inputs.self.packages.${system}.haskell-os-kernel}/kernel.elf \
-                    -smp 1 \
-                    -k en-us \
-                    -device usb-kbd \
-                    -nographic \
-                    -serial null \
-                    -serial mon:stdio \
-                    "$@"
-                '';
+                text =
+                  let
+                    haskellOsDisk = "\"\${TMPDIR:-/tmp}\"/haskell-os.img";
+                    kernelElf = "${inputs.self.packages.${system}.haskell-os-kernel}/kernel.elf";
+                    qemuCmd = ''
+                      qemu-system-arm \
+                        -nographic \
+                        -nodefaults \
+                        -serial null \
+                        -serial mon:stdio \
+                        -d guest_errors \
+                        -no-reboot \
+                        -dtb ${dtbs/bcm2708-rpi-zero.dtb} \
+                        -M raspi0 \
+                        -cpu arm1176 \
+                        -m 512M \
+                        -kernel ${kernelElf} \
+                        -drive file=${haskellOsDisk},if=none,format=raw,id=sdcard-os \
+                        -device sd-card,drive=sdcard-os \
+                        -smp 1'';
+                    id_gdb = "gdb.haskell-os-qemu-raspi0";
+                  in
+                  ''
+                    set -x
+                    cp --no-preserve=mode -vf \
+                      ${inputs.self.packages.${system}.haskell-os-disk} \
+                      ${haskellOsDisk}
+                    if [ "''${debug:+set}" ]; then
+                      ${qemuCmd} \
+                        -S \
+                        -chardev socket,path=${id_gdb}.sock,server=on,wait=off,id=${id_gdb} \
+                        -gdb chardev:${id_gdb} \
+                        "$@" &
+                      sleep 1
+                      gdb -ex "target remote ${id_gdb}.sock" ${kernelElf}
+                    else
+                      socat \
+                        STDIO,b115200,cs8,parenb=0,cstopb=0,crtscts=0 \
+                        EXEC:"${
+                          # For having an stdin that is not too messy (though it's not enough):
+                          # wrap qemu in socat and let socat buffer the line.
+                          lib.getExe (
+                            pkgs.writeShellApplication {
+                              name = "qemu-raspi0-haskell-os";
+                              text = ''
+                                set -eux
+                                exec ${qemuCmd}
+                              '';
+                            }
+                          )
+                        }",pty
+                    fi
+                  '';
               }
             );
           };
