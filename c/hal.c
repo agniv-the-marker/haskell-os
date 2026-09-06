@@ -270,7 +270,7 @@ void heap_init(void) {
     heap_end = heap_ptr + HEAP_SIZE;
 }
 
-void *kmalloc(unsigned nbytes) {
+unsigned int kmalloc(unsigned nbytes) {
     heap_ptr = (heap_ptr + 7) & ~7;
     if (heap_ptr + nbytes > heap_end) {
         uart_puts("PANIC: kmalloc out of memory!\r\n");
@@ -283,10 +283,10 @@ void *kmalloc(unsigned nbytes) {
     unsigned nwords = nbytes >> 2;
     for (unsigned i = 0; i < nwords; i++)
         wp[i] = 0;
-    return p;
+    return (unsigned int)p;
 }
 
-void *kmalloc_aligned(unsigned nbytes, unsigned alignment) {
+unsigned int kmalloc_aligned(unsigned nbytes, unsigned alignment) {
     heap_ptr = (heap_ptr + alignment - 1) & ~(alignment - 1);
     return kmalloc(nbytes);
 }

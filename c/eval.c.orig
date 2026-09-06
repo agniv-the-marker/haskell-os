@@ -1,13 +1,5 @@
 /* Copyright 2023,2024,2025 Lennart Augustsson
  * See LICENSE file for full license.
- *
- * https://github.com/augustss/MicroHs/blob/376e74ff/src/runtime/eval.c
- *
- * needed to add guarding against null/outofrange before refereincing
- * because it would dereference exception vectors by accident
- *
- * added preempt_pending check at the top of the reduction loop
- * so the ARM timer IRQ can force a yield at reduction boundaries
  */
 #include "mhsffi.h"  /* this includes config.h */
 #include "extra.c"
@@ -2525,18 +2517,30 @@ mark(NODEPTR *np)
   //    PRINT("mark depth %"PRIcounter"\n", mark_depth);
   top:
   n = *np;
-  // BAREMETAL: address 0 has exception vectors, not an unmapped page.
-  // Must guard against NULL/out-of-range before dereferencing.
-  if (n == NIL || n < cells || n > cells + heap_size)
-    return;
   tag = GETTAG(n);
   if (tag == T_IND) {
+#if SANITY
+    int loop = 0;
+    /* Skip indirections, and redirect start pointer */
+    while ((tag = GETTAG(n)) == T_IND) {
+      //      PRINT("*"); fflush(stdout);
+      n = GETINDIR(n);
+      if (loop++ > 10000000) {
+        //PRINT("%p %p %p\n", n, GETINDIR(n), GETINDIR(GETINDIR(n)));
+        ERR("IND loop");
+      }
+    }
+    //    if (loop)
+    //      PRINT("\n");
+#else  /* SANITY */
     while ((tag = GETTAG(n)) == T_IND) {
       n = GETINDIR(n);
-      if (n == NIL || n < cells || n > cells + heap_size) return;
     }
+#endif  /* SANITY */
     *np = n;
   }
+  if (n < cells || n > cells + heap_size)
+    ERR("bad n");
   if (is_marked_used(n)) {
     goto fin;
   }
@@ -2749,10 +2753,9 @@ gc(void)
 #endif
   gc_mark_time -= GETTIMEMILLI();
   mark_all_free();
-  // mark everything as reachable from the stack
-  for (i = 0; i <= stack_ptr; i++) {
+  /* Mark everything reachable from the stack */
+  for (i = 0; i <= stack_ptr; i++)
     mark(&stack[i]);
-  }
 
   /* Mark everything reachable from permanent array nodes */
   for (struct ioarray *arr = array_root; arr; arr = arr->next) {
@@ -3613,10 +3616,8 @@ parse(BFILE *f)
         /* not referenced yet, so add a direct reference */
         *nodep = x;
       } else {
-        // sanity check here
-        if (GETTAG(*nodep) != T_IND || GETINDIR(*nodep) != NIL) {
-          ERR("shared != NIL");
-        }
+        /* Sanity check */
+        if (GETTAG(*nodep) != T_IND || GETINDIR(*nodep) != NIL) ERR("shared != NIL");
         SETINDIR(*nodep, x);
       }
       break;
@@ -4751,12 +4752,8 @@ evali(NODEPTR an)
 
  top:
   /*pp(stdout, an);*/
-  // add preemption here, since this is the main loop of the evaluator.
-  // we don't want to preempt in the middle of a reduction, but we want to preempt between reductions.
-  if (--glob_slice <= 0 || preempt_pending) {
-    preempt_pending = 0;
+  if (--glob_slice <= 0)
     yield();
-  }
   l = LABEL(n);
   if (l < T_IO_STDIN) {
     /* The node is one of the permanent nodes; the address offset is the tag */
@@ -6540,14 +6537,10 @@ MHS_INIT_ARGS(
       c = getb(bf);
     }
 #endif
-#if WANT_LZ77
     if (c == 'z') {
       /* add LZ77 compressor transducer */
       bf = add_lz77_decompressor(bf);
-    }
-    else
-#endif
-    {
+    } else {
       /* put it back, we need it */
       ungetb(c, bf);
     }
@@ -6559,8 +6552,8 @@ MHS_INIT_ARGS(
   PUSH(prog);
   want_gc_red = 1;
   gc();
-  gc();
-  want_gc_red = 0;
+  gc();                         /* this finds some more GC reductions */
+  want_gc_red = 0;              /* can be enabled, but it is rarely a win */
   prog = POPTOP();
   return prog;
 }  
