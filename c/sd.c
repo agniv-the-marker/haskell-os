@@ -22,7 +22,7 @@ unsigned pi_sd_init(void) {
  *   nsec: number of sectors to read
  * Returns nonzero on success.
  */
-unsigned pi_sd_read(void *data, unsigned lba, unsigned nsec) {
+unsigned pi_sd_read(unsigned int data, unsigned lba, unsigned nsec) {
     int r = emmc_read(lba, (u8 *)data, nsec * 512);
     return (r > 0) ? 1 : 0;
 }
@@ -34,7 +34,7 @@ unsigned pi_sd_read(void *data, unsigned lba, unsigned nsec) {
  *   nsec: number of sectors to write
  * Returns nonzero on success.
  */
-unsigned pi_sd_write(void *data, unsigned lba, unsigned nsec) {
+unsigned pi_sd_write(unsigned int data, unsigned lba, unsigned nsec) {
     int r = emmc_write(lba, (u8 *)data, nsec * 512);
     return (r > 0) ? 1 : 0;
 }
