@@ -533,6 +533,8 @@ poke8 buf off val = do
     poke32 aligned new_
 ```
 
+Note: Actually, there's an easier way of going about this by using the fact that Word8's are Storable (see [Augustsson's comment](https://github.com/agniv-the-marker/haskell-os/issues/1 ))! I didn't end up doing this because a part of me wanted to keep minimal c. This makes the following sentences a bit overdramatic!
+
 In C this is just `buf[off] = val`. It's literally 3 words! But in Haskell you need to do a ton more bit manipulation with more calls than is probably healthy. Similarly, `copyBytes` copies one byte at a time through the whole peek8/poke8 dance. For a 512-byte sector that's 512 iterations of aligned-read-shift-mask-aligned-read-mask-shift-aligned-write. In C it's one `memcpy`.
 
 ![meme](/images/memcpymeme.png)
